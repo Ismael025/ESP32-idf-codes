@@ -1,0 +1,2 @@
+source C:/Darho/esp32-idf/test/build/gdbinit/symbols
+source C:/Darho/esp32-idf/test/build/gdbinit/connect

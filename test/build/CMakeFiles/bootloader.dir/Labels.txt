@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+C:/Darho/esp32-idf/test/build/CMakeFiles/bootloader
+C:/Darho/esp32-idf/test/build/CMakeFiles/bootloader.rule
+C:/Darho/esp32-idf/test/build/CMakeFiles/bootloader-complete.rule
+C:/Darho/esp32-idf/test/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+C:/Darho/esp32-idf/test/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+C:/Darho/esp32-idf/test/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+C:/Darho/esp32-idf/test/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+C:/Darho/esp32-idf/test/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+C:/Darho/esp32-idf/test/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+C:/Darho/esp32-idf/test/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule
