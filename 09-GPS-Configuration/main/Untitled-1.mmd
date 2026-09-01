@@ -1,0 +1,55 @@
+---
+references:
+  - "File: /main/main.c"
+generationTime: 2026-08-27T14:44:45.552Z
+---
+classDiagram
+    class MainModule {
+        -String TAG
+        -int GPS_UART_NUM
+        -int BUF_SIZE
+        -int ECHO_TEST_TXD
+        -int ECHO_TEST_RXD
+        +init_gps_uart() void
+        +gps_task(void* pvParameters) void
+        +app_main() void
+    }
+
+    class UartConfig {
+        +int baud_rate
+        +int data_bits
+        +int parity
+        +int stop_bits
+        +int flow_ctrl
+        +int source_clk
+    }
+
+    class UartDriver {
+        <<interface>>
+        +uart_driver_install(int uart_num, int rx_buffer_size) esp_err_t
+        +uart_param_config(int uart_num, UartConfig* config) esp_err_t
+        +uart_set_pin(int uart_num, int tx, int rx, int rts, int cts) esp_err_t
+        +uart_read_bytes(int uart_num, uint8_t* data, int length) int
+    }
+
+    class FreeRTOS {
+        <<interface>>
+        +xTaskCreate(void* task, String name, int stack_size) BaseType_t
+        +pdMS_TO_TICKS(int milliseconds) TickType_t
+    }
+
+    class UartConstants {
+        <<enumeration>>
+        UART_NUM_1
+        UART_DATA_8_BITS
+        UART_PARITY_DISABLE
+        UART_STOP_BITS_1
+        UART_HW_FLOWCTRL_DISABLE
+        UART_SCLK_DEFAULT
+        UART_PIN_NO_CHANGE
+    }
+
+    MainModule *-- UartConfig : creates
+    MainModule ..> UartDriver : configures and reads
+    MainModule ..> FreeRTOS : creates task
+    MainModule ..> UartConstants : uses
