@@ -1,4 +1,5 @@
 #include "mfrc522.h"
+#include <string.h>
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -49,6 +50,7 @@ static spi_device_handle_t rfid_device;
  */
 #define PCD_IDLE          0x00
 #define PCD_TRANSCEIVE    0x0C
+#define PCD_MFAUTHENT     0x0E
 
 /* =========================================================
  * PICC / RFID CARD COMMANDS
@@ -56,6 +58,10 @@ static spi_device_handle_t rfid_device;
  */
 #define PICC_REQA         0x26
 #define PICC_ANTICOLL_CL1 0x93
+#define PICC_CMD_MF_AUTH  0x60
+#define PICC_CMD_MF_WRITE 0xA0
+#define PICC_CMD_MF_READ  0x30
+#define PICC_CMD_HALT     0x50
 
 /* =========================================================
  * PRIVATE FUNCTION PROTOTYPES
@@ -83,7 +89,7 @@ esp_err_t mfrc522_init(void)
     /* STEP 2: Initialize the ESP32 SPI bus. */
     esp_err_t err = spi_bus_initialize(MFRC522_SPI_HOST, &bus_config, SPI_DMA_CH_AUTO);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "SPI bus initialization failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "configuration unsuccessfully: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -98,7 +104,7 @@ esp_err_t mfrc522_init(void)
     /* STEP 4: Add MFRC522 to the SPI bus. */
     err = spi_bus_add_device(MFRC522_SPI_HOST, &device_config, &rfid_device);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "SPI device configuration failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "configuration unsuccessfully: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -113,7 +119,7 @@ esp_err_t mfrc522_init(void)
 
     err = gpio_config(&rst_config);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Reset GPIO configuration failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "configuration unsuccessfully: %s", esp_err_to_name(err));
         return err;
     }
 
@@ -150,12 +156,6 @@ void mfrc522_write_register(uint8_t reg, uint8_t value)
 {
     uint8_t tx_data[2] = {0};
 
-    /*
-     * MFRC522 SPI write address format:
-     * bit 7 = 0
-     * bits 6:1 = register address
-     * bit 0 = 0
-     */
     tx_data[0] = (reg << 1) & 0x7E;
     tx_data[1] = value;
 
@@ -166,7 +166,7 @@ void mfrc522_write_register(uint8_t reg, uint8_t value)
 
     esp_err_t err = spi_device_transmit(rfid_device, &transaction);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Register write failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "configuration unsuccessfully: %s", esp_err_to_name(err));
     }
 }
 
@@ -179,14 +179,8 @@ uint8_t mfrc522_read_register(uint8_t reg)
     uint8_t tx_data[2] = {0};
     uint8_t rx_data[2] = {0};
 
-    /*
-     * MFRC522 SPI read address format:
-     * bit 7 = 1
-     * bits 6:1 = register address
-     * bit 0 = 0
-     */
     tx_data[0] = ((reg << 1) & 0x7E) | 0x80;
-    tx_data[1] = 0x00; /* Dummy byte */
+    tx_data[1] = 0x00;
 
     spi_transaction_t transaction = {
         .length = 16,
@@ -196,7 +190,7 @@ uint8_t mfrc522_read_register(uint8_t reg)
 
     esp_err_t err = spi_device_transmit(rfid_device, &transaction);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Register read failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "configuration unsuccessfully: %s", esp_err_to_name(err));
         return 0x00;
     }
 
@@ -225,77 +219,61 @@ static void mfrc522_clear_bit_mask(uint8_t reg, uint8_t mask)
 
 /* =========================================================
  * TRANSCEIVE
- * Send bytes through MFRC522 RF interface & get response.
  * =========================================================
  */
 static esp_err_t mfrc522_transceive(uint8_t *send_data, uint8_t send_len, uint8_t *back_data, uint8_t *back_len, uint8_t tx_last_bits)
 {
-    /* Stop previous command. */
     mfrc522_write_register(CommandReg, PCD_IDLE);
-
-    /* Clear interrupt flags. */
     mfrc522_write_register(ComIrqReg, 0x7F);
-
-    /* Flush MFRC522 FIFO. */
     mfrc522_write_register(FIFOLevelReg, 0x80);
 
-    /* Load outgoing bytes into FIFO. */
     for (uint8_t i = 0; i < send_len; i++) {
         mfrc522_write_register(FIFODataReg, send_data[i]);
     }
 
-    /* Configure number of valid bits in final byte (REQA uses 7 bits). */
     mfrc522_write_register(BitFramingReg, tx_last_bits & 0x07);
-
-    /* Start Transceive command. */
     mfrc522_write_register(CommandReg, PCD_TRANSCEIVE);
-
-    /* Set StartSend bit. */
     mfrc522_set_bit_mask(BitFramingReg, 0x80);
 
     bool response_received = false;
 
-    /* Wait for card response. */
     for (uint32_t i = 0; i < 2000; i++) {
         uint8_t irq = mfrc522_read_register(ComIrqReg);
 
-        /* RxIRq or IdleIRq */
         if (irq & 0x30) {
             response_received = true;
             break;
         }
 
-        /* Timer interrupt. */
         if (irq & 0x01) {
             mfrc522_clear_bit_mask(BitFramingReg, 0x80);
             return ESP_ERR_TIMEOUT;
         }
     }
 
-    /* Clear StartSend. */
     mfrc522_clear_bit_mask(BitFramingReg, 0x80);
 
     if (!response_received) {
         return ESP_ERR_TIMEOUT;
     }
 
-    /* Check MFRC522 errors. */
     uint8_t error = mfrc522_read_register(ErrorReg);
     if (error & 0x13) {
         return ESP_FAIL;
     }
 
-    /* Determine number of received bytes. */
     uint8_t fifo_level = mfrc522_read_register(FIFOLevelReg);
-    if (fifo_level > *back_len) {
-        return ESP_ERR_INVALID_SIZE;
-    }
+    
+    if (back_data && back_len) {
+        if (fifo_level > *back_len) {
+            return ESP_ERR_INVALID_SIZE;
+        }
 
-    *back_len = fifo_level;
+        *back_len = fifo_level;
 
-    /* Read response bytes from FIFO. */
-    for (uint8_t i = 0; i < fifo_level; i++) {
-        back_data[i] = mfrc522_read_register(FIFODataReg);
+        for (uint8_t i = 0; i < fifo_level; i++) {
+            back_data[i] = mfrc522_read_register(FIFODataReg);
+        }
     }
 
     return ESP_OK;
@@ -311,13 +289,11 @@ bool mfrc522_is_card_present(void)
     uint8_t response[2] = {0};
     uint8_t response_len = sizeof(response);
 
-    /* REQA contains only 7 valid bits. */
     esp_err_t err = mfrc522_transceive(&command, 1, response, &response_len, 7);
     if (err != ESP_OK) {
         return false;
     }
 
-    /* Valid ATQA response is 2 bytes. */
     return response_len == 2;
 }
 
@@ -327,35 +303,148 @@ bool mfrc522_is_card_present(void)
  */
 esp_err_t mfrc522_read_uid(uint8_t uid[4])
 {
-    /* Cascade Level 1 anticollision: 0x93 = SEL_CL1, 0x20 = NVB */
     uint8_t command[2] = {PICC_ANTICOLL_CL1, 0x20};
     uint8_t response[5] = {0};
     uint8_t response_len = sizeof(response);
 
     esp_err_t err = mfrc522_transceive(command, 2, response, &response_len, 0);
     if (err != ESP_OK) {
+        ESP_LOGE(TAG, "configuration unsuccessfully: %s", esp_err_to_name(err));
         return err;
     }
 
     if (response_len != 5) {
-        ESP_LOGE(TAG, "Unexpected UID response length: %u", response_len);
+        ESP_LOGE(TAG, "configuration unsuccessfully: %s", esp_err_to_name(ESP_ERR_INVALID_SIZE));
         return ESP_FAIL;
     }
 
-    /* Calculate BCC. */
     uint8_t calculated_bcc = response[0] ^ response[1] ^ response[2] ^ response[3];
-
-    /* Compare calculated BCC with received BCC. */
     if (calculated_bcc != response[4]) {
-        ESP_LOGE(TAG, "UID BCC verification failed");
+        ESP_LOGE(TAG, "configuration unsuccessfully: %s", esp_err_to_name(ESP_ERR_INVALID_CRC));
         return ESP_FAIL;
     }
 
-    /* Copy UID. */
     uid[0] = response[0];
     uid[1] = response[1];
     uid[2] = response[2];
     uid[3] = response[3];
 
+    return ESP_OK;
+}
+
+/* =========================================================
+ * AUTHENTICATE BLOCK
+ * =========================================================
+ */
+esp_err_t mfrc522_authenticate(uint8_t block_addr, const uint8_t *key, const uint8_t *uid)
+{
+    uint8_t buff[12];
+
+    buff[0] = PICC_CMD_MF_AUTH;
+    buff[1] = block_addr;
+    for (int i = 0; i < 6; i++) {
+        buff[2 + i] = key[i];
+    }
+    for (int i = 0; i < 4; i++) {
+        buff[8 + i] = uid[i];
+    }
+
+    mfrc522_write_register(CommandReg, PCD_IDLE);
+    mfrc522_write_register(ComIrqReg, 0x7F);
+    mfrc522_write_register(FIFOLevelReg, 0x80);
+
+    for (int i = 0; i < 12; i++) {
+        mfrc522_write_register(FIFODataReg, buff[i]);
+    }
+
+    mfrc522_write_register(CommandReg, PCD_MFAUTHENT);
+
+    TickType_t start_tick = xTaskGetTickCount();
+    while ((xTaskGetTickCount() - start_tick) < pdMS_TO_TICKS(100)) {
+        uint8_t status2 = mfrc522_read_register(Status2Reg);
+        if (status2 & 0x08) {
+            return ESP_OK;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+
+    ESP_LOGE(TAG, "configuration unsuccessfully: %s", esp_err_to_name(ESP_ERR_TIMEOUT));
+    return ESP_FAIL;
+}
+
+/* =========================================================
+ * WRITE 16 BYTES TO BLOCK
+ * =========================================================
+ */
+esp_err_t mfrc522_write_block(uint8_t block_addr, const uint8_t *data_in)
+{
+    uint8_t cmd_buff[2] = {PICC_CMD_MF_WRITE, block_addr};
+    uint8_t back_data[4];
+    uint8_t back_len = sizeof(back_data);
+
+    esp_err_t err = mfrc522_transceive(cmd_buff, 2, back_data, &back_len, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "configuration unsuccessfully: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    if (back_len == 0 || (back_data[0] & 0x0F) != 0x0A) {
+        ESP_LOGE(TAG, "configuration unsuccessfully: %s", esp_err_to_name(ESP_ERR_INVALID_RESPONSE));
+        return ESP_FAIL;
+    }
+
+    uint8_t data_buff[16];
+    memcpy(data_buff, data_in, 16);
+    back_len = sizeof(back_data);
+
+    err = mfrc522_transceive(data_buff, 16, back_data, &back_len, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "configuration unsuccessfully: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    if (back_len == 0 || (back_data[0] & 0x0F) != 0x0A) {
+        ESP_LOGE(TAG, "configuration unsuccessfully: %s", esp_err_to_name(ESP_ERR_INVALID_RESPONSE));
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+/* =========================================================
+ * HALT CARD / STOP CRYPTO
+ * =========================================================
+ */
+void mfrc522_halt_card(void)
+{
+    uint8_t command[2] = {PICC_CMD_HALT, 0x00};
+    uint8_t response[2];
+    uint8_t response_len = sizeof(response);
+
+    mfrc522_transceive(command, 2, response, &response_len, 0);
+    mfrc522_clear_bit_mask(Status2Reg, 0x08);
+}
+
+/* =========================================================
+ * ALL-IN-ONE WRITE FUNCTION
+ * =========================================================
+ */
+esp_err_t mfrc522_write_card_data(const uint8_t *uid, uint8_t block_addr, const uint8_t *key, const uint8_t *data_16bytes)
+{
+    esp_err_t err = mfrc522_authenticate(block_addr, key, uid);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "configuration unsuccessfully: %s", esp_err_to_name(err));
+        mfrc522_halt_card();
+        return err;
+    }
+
+    err = mfrc522_write_block(block_addr, data_16bytes);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "configuration unsuccessfully: %s", esp_err_to_name(err));
+        mfrc522_halt_card();
+        return err;
+    }
+
+    mfrc522_halt_card();
     return ESP_OK;
 }
